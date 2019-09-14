@@ -30,5 +30,5 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 public @interface KafkaConfig {
-    String bootstrapServers();
+    String bootstrapServers() default "";
 }

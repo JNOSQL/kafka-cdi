@@ -15,6 +15,25 @@
  */
 package org.aerogear.kafka.impl;
 
+import static org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG;
+import static org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG;
+import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Type;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+
+import javax.enterprise.context.spi.CreationalContext;
+import javax.enterprise.inject.spi.AnnotatedMethod;
+import javax.enterprise.inject.spi.Bean;
+import javax.enterprise.inject.spi.BeanManager;
+
 import org.aerogear.kafka.DefaultConsumerRebalanceListener;
 import org.aerogear.kafka.cdi.annotation.Consumer;
 import org.aerogear.kafka.cdi.extension.VerySimpleEnvironmentResolver;
@@ -27,25 +46,6 @@ import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import javax.enterprise.context.spi.CreationalContext;
-import javax.enterprise.inject.spi.AnnotatedMethod;
-import javax.enterprise.inject.spi.Bean;
-import javax.enterprise.inject.spi.BeanManager;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Type;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Properties;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Collectors;
-
-import static org.apache.kafka.clients.CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
 
 public class DelegationKafkaConsumer implements Runnable {
 
@@ -104,7 +104,7 @@ public class DelegationKafkaConsumer implements Runnable {
     }
 
 
-    public void initialize(final String bootstrapServers, final AnnotatedMethod annotatedMethod, final BeanManager beanManager) {
+    public void initialize(final Properties defaultProperties, final AnnotatedMethod annotatedMethod, final BeanManager beanManager) {
         final Consumer consumerAnnotation = annotatedMethod.getAnnotation(Consumer.class);
 
         this.topics = Arrays.stream(consumerAnnotation.topics())
@@ -119,11 +119,11 @@ public class DelegationKafkaConsumer implements Runnable {
         final Class<?> keyTypeClass = consumerKeyType(recordKeyType, annotatedMethod);
         final Class<?> valTypeClass = consumerValueType(annotatedMethod);
 
-        properties.put(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        properties.put(GROUP_ID_CONFIG, groupId);
-        properties.put(AUTO_OFFSET_RESET_CONFIG, consumerAnnotation.offset());
-        properties.put(KEY_DESERIALIZER_CLASS_CONFIG,  CafdiSerdes.serdeFrom(keyTypeClass).deserializer().getClass());
-        properties.put(VALUE_DESERIALIZER_CLASS_CONFIG,CafdiSerdes.serdeFrom(valTypeClass).deserializer().getClass());
+        properties.putAll(defaultProperties);
+        properties.putIfAbsent(GROUP_ID_CONFIG, groupId);
+        properties.putIfAbsent(AUTO_OFFSET_RESET_CONFIG, consumerAnnotation.offset());
+        properties.putIfAbsent(KEY_DESERIALIZER_CLASS_CONFIG,  CafdiSerdes.serdeFrom(keyTypeClass).deserializer().getClass());
+        properties.putIfAbsent(VALUE_DESERIALIZER_CLASS_CONFIG,CafdiSerdes.serdeFrom(valTypeClass).deserializer().getClass());
 
         createKafkaConsumer(keyTypeClass, valTypeClass, properties);
         this.consumerRebalanceListener = createConsumerRebalanceListener(consumerAnnotation.consumerRebalanceListener());

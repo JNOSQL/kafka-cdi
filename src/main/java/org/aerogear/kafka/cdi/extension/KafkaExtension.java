@@ -15,20 +15,21 @@
  */
 package org.aerogear.kafka.cdi.extension;
 
-import org.aerogear.kafka.ExtendedKafkaProducer;
-import org.aerogear.kafka.cdi.annotation.Consumer;
-import org.aerogear.kafka.cdi.annotation.KafkaConfig;
-import org.aerogear.kafka.impl.DelegationKafkaConsumer;
-import org.aerogear.kafka.impl.DelegationStreamProcessor;
-import org.aerogear.kafka.impl.InjectedKafkaProducer;
-import org.aerogear.kafka.serialization.CafdiSerdes;
-import org.aerogear.kafka.SimpleKafkaProducer;
-import org.aerogear.kafka.cdi.annotation.KafkaStream;
-import org.aerogear.kafka.cdi.annotation.Producer;
-import org.apache.kafka.common.serialization.Serde;
-import org.apache.kafka.common.serialization.Serializer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import static java.util.Collections.newSetFromMap;
+import static org.apache.kafka.clients.CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
+
+import java.io.FileReader;
+import java.lang.reflect.ParameterizedType;
+import java.util.Arrays;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import javax.enterprise.context.spi.CreationalContext;
 import javax.enterprise.event.Observes;
@@ -46,24 +47,25 @@ import javax.enterprise.inject.spi.ProcessInjectionTarget;
 import javax.enterprise.inject.spi.WithAnnotations;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
-import java.lang.reflect.ParameterizedType;
-import java.util.Arrays;
-import java.util.Properties;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
-import static java.util.Collections.newSetFromMap;
-import static org.apache.kafka.clients.CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
-import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
-import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
+import org.aerogear.kafka.ExtendedKafkaProducer;
+import org.aerogear.kafka.SimpleKafkaProducer;
+import org.aerogear.kafka.cdi.annotation.Consumer;
+import org.aerogear.kafka.cdi.annotation.KafkaConfig;
+import org.aerogear.kafka.cdi.annotation.KafkaStream;
+import org.aerogear.kafka.cdi.annotation.Producer;
+import org.aerogear.kafka.impl.DelegationKafkaConsumer;
+import org.aerogear.kafka.impl.DelegationStreamProcessor;
+import org.aerogear.kafka.impl.InjectedKafkaProducer;
+import org.aerogear.kafka.serialization.CafdiSerdes;
+import org.apache.kafka.common.serialization.Serde;
+import org.apache.kafka.common.serialization.Serializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class KafkaExtension<X> implements Extension {
 
-    private String bootstrapServers = null;
+    private Properties defaultProperties = null;
     private final Set<AnnotatedMethod<?>> listenerMethods = newSetFromMap(new ConcurrentHashMap<>());
     private final Set<AnnotatedMethod<?>> streamProcessorMethods = newSetFromMap(new ConcurrentHashMap<>());
     private final Set<DelegationKafkaConsumer> managedConsumers = newSetFromMap(new ConcurrentHashMap<>());
@@ -72,15 +74,26 @@ public class KafkaExtension<X> implements Extension {
 
 
     public void kafkaConfig(@Observes @WithAnnotations(KafkaConfig.class) ProcessAnnotatedType<X> pat) {
-        logger.trace("Kafka config scanning type: " + pat.getAnnotatedType().getJavaClass().getName());
+        logger.debug("Kafka config scanning type: " + pat.getAnnotatedType().getJavaClass().getName());
 
         final AnnotatedType<X> annotatedType = pat.getAnnotatedType();
         final KafkaConfig kafkaConfig = annotatedType.getAnnotation(KafkaConfig.class);
 
         // we just do the first
-        if (kafkaConfig != null && bootstrapServers == null) {
-            logger.info("setting bootstrap.servers IP for, {}", kafkaConfig.bootstrapServers());
-            bootstrapServers = VerySimpleEnvironmentResolver.simpleBootstrapServerResolver(kafkaConfig.bootstrapServers());
+        if (kafkaConfig != null && defaultProperties == null) {
+        	defaultProperties = new Properties();
+        	if (System.getProperty("kafka.config") != null) {
+        		logger.info("Loading Kafka config from {}", System.getProperty("kafka.config"));
+        		try (FileReader fileReader = new FileReader(System.getProperty("kafka.config"))) {
+        			defaultProperties.load(fileReader);
+        		} catch (Exception e) {
+        			logger.warn("Loading Kafka config from {} failed", System.getProperty("kafka.config"), e);
+        		}
+        	}
+        	if (kafkaConfig.bootstrapServers() != null && kafkaConfig.bootstrapServers().length() > 0) {
+        		logger.info("setting bootstrap.servers IP for, {}", kafkaConfig.bootstrapServers());
+        		defaultProperties.put(BOOTSTRAP_SERVERS_CONFIG, VerySimpleEnvironmentResolver.simpleBootstrapServerResolver(kafkaConfig.bootstrapServers()));        		
+        	}
         }
     }
 
@@ -120,7 +133,7 @@ public class KafkaExtension<X> implements Extension {
             final DelegationKafkaConsumer frameworkConsumer = (DelegationKafkaConsumer) bm.getReference(bean, DelegationKafkaConsumer.class, ctx);
 
             // hooking it all together
-            frameworkConsumer.initialize(bootstrapServers, consumerMethod, bm);
+            frameworkConsumer.initialize(defaultProperties, consumerMethod, bm);
 
             managedConsumers.add(frameworkConsumer);
             submitToExecutor(frameworkConsumer);
@@ -132,14 +145,8 @@ public class KafkaExtension<X> implements Extension {
             final CreationalContext<DelegationStreamProcessor> ctx = bm.createCreationalContext(bean);
             final DelegationStreamProcessor frameworkProcessor = (DelegationStreamProcessor) bm.getReference(bean, DelegationStreamProcessor.class, ctx);
 
-            frameworkProcessor.init(bootstrapServers, annotatedStreamMethod, bm);
+            frameworkProcessor.init(defaultProperties, annotatedStreamMethod, bm);
         });
-
-
-
-
-
-
 
     }
 
@@ -171,7 +178,7 @@ public class KafkaExtension<X> implements Extension {
                             final Serde<?> valSerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)field.getGenericType()).getActualTypeArguments()[1]);
 
                             final org.apache.kafka.clients.producer.Producer p = createInjectionProducer(
-                                    bootstrapServers,
+                            		defaultProperties,
                                     keySerde.serializer().getClass(),
                                     valSerde.serializer().getClass(),
                                     keySerde.serializer(),
@@ -236,10 +243,10 @@ public class KafkaExtension<X> implements Extension {
         executorService.execute(delegationKafkaConsumer);
     }
 
-    private org.apache.kafka.clients.producer.Producer createInjectionProducer(final String bootstrapServers, final Class<?> keySerializerClass, final Class<?> valSerializerClass, final Serializer<?> keySerializer, final Serializer<?> valSerializer ) {
+    private org.apache.kafka.clients.producer.Producer createInjectionProducer(final Properties defaultProperties, final Class<?> keySerializerClass, final Class<?> valSerializerClass, final Serializer<?> keySerializer, final Serializer<?> valSerializer ) {
 
         final Properties properties = new Properties();
-        properties.put(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        properties.putAll(defaultProperties);
         properties.put(KEY_SERIALIZER_CLASS_CONFIG, keySerializerClass);
         properties.put(VALUE_SERIALIZER_CLASS_CONFIG, valSerializerClass);
 
